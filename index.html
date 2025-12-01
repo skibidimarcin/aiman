@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <title>Projekt Klienta AI "SigmaBrain" v3.4.1</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Firebase App (the core Firebase SDK) -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <style>
+        body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#1e1e1e;color:#e0e0e0;}
+        .container{max-width:900px;margin:auto;padding:20px;}
+        h1{font-size:2rem;text-align:center;margin-bottom:20px;}
+        .auth-section,.chat-section,.settings-section,.admin-section{display:none;}
+        .auth-section.active,.chat-section.active,.settings-section.active,.admin-section.active{display:block;}
+        .btn{padding:10px 20px;background:#4caf50;color:#fff;border:none;border-radius:4px;cursor:pointer;margin-top:10px;}
+        .btn:hover{background:#45a049;}
+        .input{padding:10px;width:100%;box-sizing:border-box;border:none;border-radius:4px;background:#333;color:#fff;margin-top:5px;}
+        .input::placeholder{color:#888;}
+        .error{color:#f44336;margin-top:5px;}
+        .chat-box{height:400px;background:#2b2b2b;border-radius:4px;padding:10px;overflow-y:auto;margin-bottom:10px;}
+        .chat-msg{margin-bottom:8px;}
+        .chat-msg.user{color:#fff;}
+        .chat-msg.ai{color:#00ff7f;}
+        .settings-panel{background:#2b2b2b;padding:10px;border-radius:4px;margin-bottom:10px;}
+        .label{display:block;margin-top:10px;}
+        .license-status{margin-top:10px;font-weight:bold;}
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>SigmaBrain v3.4.1</h1>
+    <div id="auth" class="auth-section active">
+        <h2>Login / Rejestracja</h2>
+        <input type="email" id="email" class="input" placeholder="E‑mail">
+        <input type="password" id="password" class="input" placeholder="Hasło">
+        <input type="password" id="secondPass" class="input" placeholder="Drugie hasło (opcjonalne)">
+        <button id="loginBtn" class="btn">Zaloguj się</button>
+        <button id="registerBtn" class="btn">Zarejestruj</button>
+        <div id="authError" class="error"></div>
+    </div>
+    <div id="chat" class="chat-section">
+        <div class="license-status" id="licenseInfo"></div>
+        <div class="chat-box" id="chatBox"></div>
+        <input type="text" id="promptInput" class="input" placeholder="Napisz pytanie">
+        <button id="sendBtn" class="btn">Wyślij</button>
+        <button id="settingsBtn" class="btn">Ustawienia</button>
+        <button id="adminBtn" class="btn">Admin Panel</button>
+    </div>
+    <div id="settings" class="settings-section">
+        <h3>Zaawansowane ustawienia</h3>
+        <label class="label" for="systemPrompt">System Prompt (np. „Odzywaj się per Pan”)</label>
+        <textarea id="systemPrompt" class="input" rows="3"></textarea>
+        <label class="label">Kolor tekstu AI</label>
+        <input type="color" id="aiColor" class="input" value="#00ff7f">
+        <label class="label">Kolor tła czatu</label>
+        <input type="color" id="bgColor" class="input" value="#2b2b2b">
+        <button id="saveSettings" class="btn">Zapisz ustawienia</button>
+        <button id="closeSettings" class="btn">Zamknij</button>
+        <div id="settingsError" class="error"></div>
+    </div>
+    <div id="admin" class="admin-section">
+        <h3>Panel Administracyjny</h3>
+        <div id="adminAuth" class="admin-panel">
+            <input type="password" id="adminPass" class="input" placeholder="Hasło admina">
+            <button id="adminLoginBtn" class="btn">Zaloguj</button>
+            <div id="adminError" class="error"></div>
+        </div>
+        <div id="adminPanel" style="display:none;">
+            <h4>Generator Licencji</h4>
+            <label class="label" for="licenseDuration">Okres ważności</label>
+            <select id="licenseDuration" class="input">
+                <option value="1d">1 dzień</option>
+                <option value="1m">1 miesiąc</option>
+                <option value="1y">1 rok</option>
+                <option value="perm">Permanentny</option>
+            </select>
+            <label class="label" for="licenseEmail">E‑mail użytkownika</label>
+            <input type="email" id="licenseEmail" class="input" placeholder="E‑mail użytkownika">
+            <button id="generateLicense" class="btn">Wygeneruj licencję</button>
+            <div id="licenseInfoAdmin"></div>
+            <h4>Wszystkie licencje</h4>
+            <div id="licenseList"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // ===== Firebase konfiguracja (wypełnij własnymi danymi) =====
+    const firebaseConfig = {
+        apiKey: "YOUR_API_KEY",
+        authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+        projectId: "YOUR_PROJECT_ID",
+        storageBucket: "YOUR_PROJECT_ID.appspot.com",
+        messagingSenderId: "YOUR_SENDER_ID",
+        appId: "YOUR_APP_ID"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const db = firebase.firestore();
+    // ======== Zmienne globalne ========
+    let currentUser = null;
+    let userData = {};
+    const MAX_PROMPTS_FREE = 50;
+    const PROMPT_LIMITS = {FREE: 50, PREMIUM: Infinity};
+    const PROMPT_COUNTS = {}; // przechowuje liczby promptów na dzień
+    // ======== Funkcje UI ========
+    function showSection(section) {
+        ['auth','chat','settings','admin'].forEach(id=>{
+            document.getElementById(id).className = id===section?'active':'';
+        });
+    }
+    function displayAuthError(msg){document.getElementById('authError').innerText=msg;}
+    function displaySettingsError(msg){document.getElementById('settingsError').innerText=msg;}
+    function displayAdminError(msg){document.getElementById('adminError').innerText=msg;}
+    // ======== Logika logowania/rejestracji ========
+    document.getElementById('loginBtn').addEventListener('click',()=> {
+        const email=document.getElementById('email').value.trim();
+        const password=document.getElementById('password').value;
+        auth.signInWithEmailAndPassword(email,password)
+            .then(()=>{setupUser();})
+            .catch(err=>displayAuthError(err.message));
+    });
+    document.getElementById('registerBtn').addEventListener('click',()=> {
+        const email=document.getElementById('email').value.trim();
+        const password=document.getElementById('password').value;
+        const second=document.getElementById('secondPass').value;
+        if(!email||!password){displayAuthError('Wymagane wszystkie pola');return;}
+        auth.createUserWithEmailAndPassword(email,password)
+            .then(()=>{setupUser();})
+            .catch(err=>displayAuthError(err.message));
+    });
+    // ======== Setup użytkownika po zalogowaniu ========
+    function setupUser(){
+        auth.onAuthStateChanged(user=>{
+            if(user){
+                currentUser=user;
+                db.collection('users').doc(user.uid).get().then(doc=>{
+                    if(doc.exists){userData=doc.data();}
+                    else{userData={license:'FREE',settings:{},promptCount:{}};}
+                    loadSettings();
+                    showSection('chat');
+                    updateLicenseInfo();
+                });
+            }
+        });
+    }
+    // ======== Ustawienia chat ========
+    function loadSettings(){
+        const settings=userData.settings||{};
+        document.getElementById('systemPrompt').value=settings.systemPrompt||'';
+        document.getElementById('aiColor').value=settings.aiColor||'#00ff7f';
+        document.getElementById('bgColor').value=settings.bgColor||'#2b2b2b';
+        document.getElementById('chatBox').style.backgroundColor=document.getElementById('bgColor').value;
+        document.getElementById('chatBox').style.color=document.getElementById('aiColor').value;
+    }
+    document.getElementById('settingsBtn').addEventListener('click',()=>showSection('settings'));
+    document.getElementById('closeSettings').addEventListener('click',()=>showSection('chat'));
+    document.getElementById('saveSettings').addEventListener('click',()=> {
+        const sys=document.getElementById('systemPrompt').value;
+        const ai=document.getElementById('aiColor').value;
+        const bg=document.getElementById('bgColor').value;
+        const newSettings={systemPrompt:sys,aiColor:ai,bgColor:bg};
+        db.collection('users').doc(currentUser.uid).set({settings:newSettings,license:userData.license},{merge:true})
+            .then(()=>{userData.settings=newSettings;loadSettings();displaySettingsError('Ustawienia zapisane');})
+            .catch(err=>displaySettingsError(err.message));
+    });
+    // ======== Licencja ========
+    function updateLicenseInfo(){
+        const info=document.getElementById('licenseInfo');
+        if(userData.license==='PREMIUM'){
+            const exp=userData.expiry?new Date(userData.expiry).toLocaleDateString():'Permanentny';
+            info.innerText='PREMIUM (do '+exp+')';
+        }else{
+            const used=PROMPT_COUNTS[dateKey()]||0;
+            info.innerText='FREE ('+used+'/'+MAX_PROMPTS_FREE+' dziennie)';
+        }
+    }
+    function dateKey(){return new Date().toISOString().slice(0,10);}
+    // ======== Wysyłanie promptów ========
+    document.getElementById('sendBtn').addEventListener('click',()=> {
+        const prompt=document.getElementById('promptInput').value.trim();
+        if(!prompt)return;
+        if(userData.license==='FREE'){
+            const used=PROMPT_COUNTS[dateKey()]||0;
+            if(used>=MAX_PROMPTS_FREE){alert('Przekroczono limit 50 promptów na dobę.');return;}
+        }
+        const chatBox=document.getElementById('chatBox');
+        const userMsg=document.createElement('div');userMsg.className='chat-msg user';userMsg.textContent=prompt;
+        chatBox.appendChild(userMsg);
+        // Zapisz prompt count
+        if(userData.license==='FREE'){
+            PROMPT_COUNTS[dateKey()]=(PROMPT_COUNTS[dateKey()]||0)+1;
+        }
+        // Wywołanie AI (symulowane)
+        const aiResponse='Odpowiedź AI na: '+prompt;
+        setTimeout(()=>{ // symulacja opóźnienia
+            const aiMsg=document.createElement('div');aiMsg.className='chat-msg ai';aiMsg.textContent=aiResponse;
+            chatBox.appendChild(aiMsg);
+            chatBox.scrollTop=chatBox.scrollHeight;
+        },1200);
+        document.getElementById('promptInput').value='';
+    });
+    // ======== Admin Panel ========
+    const ADMIN_PASSWORD='KuLdFcZ8m0gd7';
+    document.getElementById('adminBtn').addEventListener('click',()=>showSection('admin'));
+    document.getElementById('adminLoginBtn').addEventListener('click',()=> {
+        const pass=document.getElementById('adminPass').value;
+        if(pass===ADMIN_PASSWORD){
+            document.getElementById('adminAuth').style.display='none';
+            document.getElementById('adminPanel').style.display='block';
+            loadLicenseList();
+        }else{displayAdminError('Błędne hasło');}
+    });
+    // ======== Generowanie licencji ========
+    document.getElementById('generateLicense').addEventListener('click',()=> {
+        const email=document.getElementById('licenseEmail').value.trim();
+        const duration=document.getElementById('licenseDuration').value;
+        if(!email){displayAdminError('Wprowadź e‑mail użytkownika');return;}
+        const code=Array.from({length:12},()=>Math.floor(Math.random()*10)).join('');
+        const now=new Date();
+        let expiry=null;
+        if(duration==='1d')expiry=new Date(now.getTime()+24*60*60*1000);
+        if(duration==='1m')expiry=new Date(now.getTime()+30*24*60*60*1000);
+        if(duration==='1y')expiry=new Date(now.getTime()+365*24*60*60*1000);
+        if(duration==='perm')expiry=null;
+        // Zapis w bazie
+        db.collection('licenses').doc(code).set({email,expiry,active:true})
+            .then(()=>{document.getElementById('licenseInfoAdmin').innerText='Wygenerowano licencję: '+code;loadLicenseList();})
+            .catch(err=>displayAdminError(err.message));
+    });
+    function loadLicenseList(){
+        const list=document.getElementById('licenseList');
+        list.innerHTML='';
+        db.collection('licenses').get().then(snapshot=>{
+            snapshot.forEach(doc=>{
+                const data=doc.data();
+                const div=document.createElement('div');
+                div.style.marginBottom='5px';
+                div.textContent='Kod: '+doc.id+' | E‑mail: '+data.email+' | Wygasa: '+(data.expiry?new Date(data.expiry).toLocaleDateString():'Permanentny')+' | '+(data.active?'Aktywna':'Nieaktywna');
+                const delBtn=document.createElement('button');
+                delBtn.textContent='Unieważnij';
+                delBtn.className='btn';
+                delBtn.style.marginLeft='10px';
+                delBtn.addEventListener('click',()=>{db.collection('licenses').doc(doc.id).update({active:false});loadLicenseList();});
+                div.appendChild(delBtn);
+                list.appendChild(div);
+            });
+        });
+    }
+    // ======== Ustawienia licencji użytkownika (Admin) ========
+    // Na logowaniu użytkownika po rejestracji można przydzielić licencję z bazy
+    // W tym przykładowym kodzie nie wprowadzamy pełnej logiki aktywacji licencji
+    // (potrzebne dodatkowe wywołania Firebase Functions)
+    // ======== Inicjalizacja ========
+    setupUser();
+</script>
+</body>
+</html>
